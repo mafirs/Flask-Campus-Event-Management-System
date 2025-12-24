@@ -3,8 +3,13 @@ from flask_restful import Resource
 from flask_jwt_extended import jwt_required
 from app.utils.response import success_response, error_response, paginated_response
 from app.utils.auth import token_required, get_current_user_id, is_admin
-from app.services.mock_data import mock_data_service
 from datetime import datetime
+from app import db
+from app.models.user import User
+from app.models.venue import Venue
+from app.models.material import Material
+from app.models.application import Application, ApplicationMaterial
+
 
 class ApplicationListResource(Resource):
     """申请列表资源 - 用于创建申请"""
@@ -41,8 +46,19 @@ class ApplicationListResource(Resource):
             if start_dt <= datetime.utcnow().replace(tzinfo=start_dt.tzinfo):
                 return error_response(400, "申请时间不能是过去时间")
 
+            # 获取当前用户
+            user = db.session.get(User, current_user_id)
+            if not user:
+                return error_response(404, "用户不存在")
+
+            # 基于角色的差异化审批流
+            if user.role == 'user':
+                initial_status = 'pending_reviewer'
+            else:
+                initial_status = 'pending_admin'
+
             # 验证场地是否存在且可用
-            venue = mock_data_service.get_venue_by_id(data['venueId'])
+            venue = db.session.get(Venue, data['venueId'])
             if not venue:
                 return error_response(404, "场地不存在")
 
@@ -50,18 +66,21 @@ class ApplicationListResource(Resource):
                 return error_response(400, "场地当前不可用")
 
             # 检查场地时间冲突
-            applications = mock_data_service.get_all_applications()
-            for app in applications:
-                if (app.venue_id == data['venueId'] and
-                    app.status in ['pending', 'approved'] and
-                    app.has_time_conflict(data['startTime'], data['endTime'])):
+            conflicting_apps = db.session.query(Application).filter(
+                Application.venue_id == venue.id,
+                Application.status.in_(['pending_reviewer', 'pending_admin', 'approved'])
+            ).all()
+
+            for app in conflicting_apps:
+                if app.has_time_conflict(data['startTime'], data['endTime']):
                     return error_response(400, "该时间段场地已被预约")
 
-            # 验证物资
+            # 验证物资并扣减库存
             materials_data = data.get('materials', [])
             if not materials_data:
                 return error_response(400, "请至少申请一个物资")
 
+            app_materials_list = []
             for material_item in materials_data:
                 material_id = material_item.get('materialId')
                 quantity = material_item.get('quantity')
@@ -72,20 +91,40 @@ class ApplicationListResource(Resource):
                 if not isinstance(quantity, int) or quantity <= 0:
                     return error_response(400, "物资数量必须是正整数")
 
-                # 检查物资是否存在且可用
-                material = mock_data_service.get_material_by_id(material_id)
+                material = db.session.get(Material, material_id)
                 if not material:
                     return error_response(404, f"物资ID {material_id} 不存在")
 
                 if not material.is_available():
                     return error_response(400, f"物资 {material.name} 当前不可用")
 
-                # 检查库存是否充足
                 if material.available_quantity < quantity:
                     return error_response(400, f"物资 {material.name} 库存不足，当前可用数量: {material.available_quantity}")
 
-            # 创建申请（会自动预占库存）
-            application = mock_data_service.create_application(data, current_user_id)
+                # 扣减库存
+                material.available_quantity -= quantity
+
+                app_material = ApplicationMaterial(
+                    material_id=material_id,
+                    quantity=quantity
+                )
+                app_materials_list.append(app_material)
+
+            # 创建申请
+            application = Application(
+                id=None,
+                user_id=current_user_id,
+                activity_name=data['activityName'],
+                activity_description=data['activityDescription'],
+                venue_id=data['venueId'],
+                start_time=data['startTime'],
+                end_time=data['endTime'],
+                materials=app_materials_list,
+                status=initial_status
+            )
+
+            db.session.add(application)
+            db.session.commit()
 
             return success_response({
                 'id': application.id,
@@ -95,10 +134,12 @@ class ApplicationListResource(Resource):
             }, "申请提交成功")
 
         except Exception as e:
+            db.session.rollback()
             current_app.logger.error(f"创建申请错误: {str(e)}")
             import traceback
             current_app.logger.error(f"详细错误信息: {traceback.format_exc()}")
             return error_response(500, f"服务器内部错误: {str(e)}")
+
 
 class ApplicationResource(Resource):
     """申请详情资源"""
@@ -111,7 +152,7 @@ class ApplicationResource(Resource):
             if not current_user_id:
                 return error_response(401, "无效的用户信息")
 
-            application = mock_data_service.get_application_by_id(application_id)
+            application = db.session.get(Application, application_id)
             if not application:
                 return error_response(404, "申请不存在")
 
@@ -120,13 +161,13 @@ class ApplicationResource(Resource):
                 return error_response(403, "权限不足")
 
             # 获取详细信息
-            user = mock_data_service.get_user_by_id(application.user_id)
-            venue = mock_data_service.get_venue_by_id(application.venue_id)
+            user = db.session.get(User, application.user_id)
+            venue = db.session.get(Venue, application.venue_id)
 
             # 构建物资详细信息
             material_details = []
             for app_material in application.materials:
-                material = mock_data_service.get_material_by_id(app_material.material_id)
+                material = db.session.get(Material, app_material.material_id)
                 if material:
                     material_details.append({
                         'materialId': material.id,
@@ -147,6 +188,7 @@ class ApplicationResource(Resource):
             current_app.logger.error(f"获取申请详情错误: {str(e)}")
             return error_response(500, "服务器内部错误")
 
+
 class MyApplicationResource(Resource):
     """我的申请列表资源"""
 
@@ -163,32 +205,27 @@ class MyApplicationResource(Resource):
             size = int(request.args.get('size', 10))
             status = request.args.get('status')
 
-            # 获取用户的申请
-            applications = mock_data_service.get_applications_by_user(current_user_id)
+            # 构建查询
+            query = Application.query.filter_by(user_id=current_user_id)
 
-            # 状态筛选
             if status:
-                applications = [app for app in applications if app.status == status]
+                query = query.filter_by(status=status)
 
-            # 按创建时间倒序排列
-            applications.sort(key=lambda x: x.created_at, reverse=True)
+            query = query.order_by(Application.created_at.desc())
 
             # 分页
-            total = len(applications)
-            start_idx = (page - 1) * size
-            end_idx = start_idx + size
-            applications_page = applications[start_idx:end_idx]
+            pagination = query.paginate(page=page, per_page=size, error_out=False)
+            applications_page = pagination.items
+            total = pagination.total
 
             applications_data = []
             for app in applications_page:
-                # 获取场地信息
-                venue = mock_data_service.get_venue_by_id(app.venue_id)
+                venue = db.session.get(Venue, app.venue_id)
                 venue_info = venue.to_dict() if venue else {}
 
-                # 获取物资信息
                 material_details = []
                 for app_material in app.materials:
-                    material = mock_data_service.get_material_by_id(app_material.material_id)
+                    material = db.session.get(Material, app_material.material_id)
                     if material:
                         material_details.append({
                             'materialId': material.id,
@@ -221,6 +258,7 @@ class MyApplicationResource(Resource):
             current_app.logger.error(f"获取我的申请列表错误: {str(e)}")
             return error_response(500, "服务器内部错误")
 
+
 class ApplicationCancelResource(Resource):
     """申请取消资源"""
 
@@ -232,7 +270,7 @@ class ApplicationCancelResource(Resource):
             if not current_user_id:
                 return error_response(401, "无效的用户信息")
 
-            application = mock_data_service.get_application_by_id(application_id)
+            application = db.session.get(Application, application_id)
             if not application:
                 return error_response(404, "申请不存在")
 
@@ -240,23 +278,32 @@ class ApplicationCancelResource(Resource):
             if (application.user_id != current_user_id and not is_admin()):
                 return error_response(403, "权限不足")
 
-            # 检查是否可以取消
-            if not application.can_be_cancelled():
+            # 检查是否可以取消（处理新旧状态值）
+            if not application.can_be_cancelled() and application.status not in ['pending_reviewer', 'pending_admin']:
                 return error_response(400, f"当前状态 {application.status} 的申请无法取消")
 
-            # 取消申请（会自动释放库存）
-            success = mock_data_service.update_application_status(application_id, 'cancelled')
-            if not success:
-                return error_response(500, "取消申请失败")
+            # 更新状态
+            application.status = 'cancelled'
+            application.updated_at = datetime.utcnow()
 
-            updated_application = mock_data_service.get_application_by_id(application_id)
+            # 归还库存
+            for app_material in application.materials:
+                material = db.session.get(Material, app_material.material_id)
+                if material:
+                    material.available_quantity = min(
+                        material.available_quantity + app_material.quantity,
+                        material.total_quantity
+                    )
+
+            db.session.commit()
 
             return success_response({
-                'id': updated_application.id,
-                'status': updated_application.status,
-                'updatedAt': updated_application.updated_at.isoformat()
+                'id': application.id,
+                'status': application.status,
+                'updatedAt': application.updated_at.isoformat()
             }, "申请已取消")
 
         except Exception as e:
+            db.session.rollback()
             current_app.logger.error(f"取消申请错误: {str(e)}")
             return error_response(500, "服务器内部错误")

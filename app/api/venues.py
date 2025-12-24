@@ -3,9 +3,11 @@ from flask_restful import Resource
 from flask_jwt_extended import jwt_required
 from app.utils.response import success_response, error_response, paginated_response
 from app.utils.auth import admin_required, get_current_user_id
-from app.services.mock_data import mock_data_service
 from datetime import datetime
-import re
+from app import db
+from app.models.venue import Venue
+from app.models.application import Application
+
 
 class VenueListResource(Resource):
     """场地列表资源"""
@@ -20,28 +22,28 @@ class VenueListResource(Resource):
             status = request.args.get('status')
             search = request.args.get('search', '').strip()
 
-            # 获取所有场地
-            venues = mock_data_service.get_all_venues()
+            # 构建查询
+            query = Venue.query
 
-            # 状态筛选
             if status:
-                venues = [v for v in venues if v.status == status]
+                query = query.filter_by(status=status)
 
-            # 搜索筛选
             if search:
-                search_lower = search.lower()
-                venues = [
-                    v for v in venues
-                    if search_lower in v.name.lower() or
-                       search_lower in v.location.lower() or
-                       search_lower in v.description.lower()
-                ]
+                search_pattern = f'%{search}%'
+                query = query.filter(
+                    db.or_(
+                        Venue.name.ilike(search_pattern),
+                        Venue.location.ilike(search_pattern),
+                        Venue.description.ilike(search_pattern)
+                    )
+                )
 
             # 分页
-            total = len(venues)
-            start_idx = (page - 1) * size
-            end_idx = start_idx + size
-            venues_page = venues[start_idx:end_idx]
+            pagination = query.order_by(Venue.created_at.desc()).paginate(
+                page=page, per_page=size, error_out=False
+            )
+            venues_page = pagination.items
+            total = pagination.total
 
             venues_data = [venue.to_dict() for venue in venues_page]
 
@@ -73,13 +75,24 @@ class VenueListResource(Resource):
                 return error_response(400, "容量必须是正整数")
 
             # 创建场地
-            venue = mock_data_service.create_venue(data)
+            venue = Venue(
+                name=data['name'],
+                location=data['location'],
+                capacity=capacity,
+                description=data['description'],
+                status='available'
+            )
+
+            db.session.add(venue)
+            db.session.commit()
 
             return success_response(venue.to_dict(), "场地创建成功")
 
         except Exception as e:
+            db.session.rollback()
             current_app.logger.error(f"创建场地错误: {str(e)}")
             return error_response(500, "服务器内部错误")
+
 
 class VenueResource(Resource):
     """单个场地资源"""
@@ -88,7 +101,7 @@ class VenueResource(Resource):
     def get(self, venue_id):
         """获取场地详情"""
         try:
-            venue = mock_data_service.get_venue_by_id(venue_id)
+            venue = db.session.get(Venue, venue_id)
             if not venue:
                 return error_response(404, "场地不存在")
 
@@ -102,7 +115,7 @@ class VenueResource(Resource):
     def put(self, venue_id):
         """更新场地"""
         try:
-            venue = mock_data_service.get_venue_by_id(venue_id)
+            venue = db.session.get(Venue, venue_id)
             if not venue:
                 return error_response(404, "场地不存在")
 
@@ -116,15 +129,25 @@ class VenueResource(Resource):
                 if not isinstance(capacity, int) or capacity <= 0:
                     return error_response(400, "容量必须是正整数")
 
-            # 更新场地
-            success = mock_data_service.update_venue(venue_id, data)
-            if not success:
-                return error_response(500, "更新场地失败")
+            # 更新字段
+            if 'name' in data:
+                venue.name = data['name']
+            if 'location' in data:
+                venue.location = data['location']
+            if 'capacity' in data:
+                venue.capacity = data['capacity']
+            if 'description' in data:
+                venue.description = data['description']
+            if 'status' in data:
+                venue.status = data['status']
 
-            updated_venue = mock_data_service.get_venue_by_id(venue_id)
-            return success_response(updated_venue.to_dict(), "场地更新成功")
+            venue.updated_at = datetime.utcnow()
+            db.session.commit()
+
+            return success_response(venue.to_dict(), "场地更新成功")
 
         except Exception as e:
+            db.session.rollback()
             current_app.logger.error(f"更新场地错误: {str(e)}")
             return error_response(500, "服务器内部错误")
 
@@ -132,30 +155,30 @@ class VenueResource(Resource):
     def delete(self, venue_id):
         """删除场地"""
         try:
-            venue = mock_data_service.get_venue_by_id(venue_id)
+            venue = db.session.get(Venue, venue_id)
             if not venue:
                 return error_response(404, "场地不存在")
 
             # 检查是否有相关申请
-            applications = mock_data_service.get_all_applications()
-            has_applications = any(
-                app.venue_id == venue_id and app.status in ['pending', 'approved']
-                for app in applications
-            )
+            has_applications = db.session.query(Application).filter(
+                Application.venue_id == venue_id,
+                Application.status.in_(['pending_reviewer', 'pending_admin', 'approved'])
+            ).first() is not None
 
             if has_applications:
                 return error_response(400, "该场地有待审批或已通过的申请，无法删除")
 
             # 删除场地
-            success = mock_data_service.delete_venue(venue_id)
-            if not success:
-                return error_response(500, "删除场地失败")
+            db.session.delete(venue)
+            db.session.commit()
 
             return success_response(None, "场地删除成功")
 
         except Exception as e:
+            db.session.rollback()
             current_app.logger.error(f"删除场地错误: {str(e)}")
             return error_response(500, "服务器内部错误")
+
 
 class VenueAvailableResource(Resource):
     """可用场地查询资源"""
@@ -181,23 +204,21 @@ class VenueAvailableResource(Resource):
                 return error_response(400, "开始时间必须早于结束时间")
 
             # 获取所有可用的场地
-            all_venues = mock_data_service.get_all_venues()
             available_venues = []
 
-            for venue in all_venues:
-                if not venue.is_available():
-                    continue
+            venues = Venue.query.filter_by(status='available').all()
 
+            for venue in venues:
                 # 检查时间冲突
-                has_conflict = False
-                applications = mock_data_service.get_all_applications()
+                conflicting_apps = db.session.query(Application).filter(
+                    Application.venue_id == venue.id,
+                    Application.status.in_(['pending_reviewer', 'pending_admin', 'approved'])
+                ).all()
 
-                for app in applications:
-                    if (app.venue_id == venue.id and
-                        app.status in ['pending', 'approved'] and
-                        app.has_time_conflict(start_time, end_time)):
-                        has_conflict = True
-                        break
+                has_conflict = any(
+                    app.has_time_conflict(start_time, end_time)
+                    for app in conflicting_apps
+                )
 
                 if not has_conflict:
                     available_venues.append(venue)

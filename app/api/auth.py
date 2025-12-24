@@ -3,7 +3,8 @@ from flask_restful import Resource
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from app.utils.response import success_response, error_response
 from app.utils.auth import get_current_user_id
-from app.services.mock_data import mock_data_service
+from app import db
+from app.models.user import User
 
 class LoginResource(Resource):
     """用户登录资源"""
@@ -22,7 +23,7 @@ class LoginResource(Resource):
                 return error_response(400, "用户名和密码不能为空")
 
             # 验证用户
-            user = mock_data_service.get_user_by_username(username)
+            user = db.session.query(User).filter_by(username=username).first()
             if not user or not user.check_password(password):
                 return error_response(401, "用户名或密码错误")
 
@@ -70,7 +71,7 @@ class ProfileResource(Resource):
             if not user_id:
                 return error_response(401, "无效的用户信息")
 
-            user = mock_data_service.get_user_by_id(user_id)
+            user = db.session.get(User, user_id)
             if not user:
                 return error_response(404, "用户不存在")
 

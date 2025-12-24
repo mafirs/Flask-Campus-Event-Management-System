@@ -2,7 +2,10 @@ from flask import Flask
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from flask_restful import Api
+from flask_sqlalchemy import SQLAlchemy
 from app.config import config
+
+db = SQLAlchemy()
 
 def create_app(config_name='default'):
     """
@@ -18,6 +21,9 @@ def create_app(config_name='default'):
 
     # 加载配置
     app.config.from_object(config[config_name])
+
+    # 初始化数据库
+    db.init_app(app)
 
     # 初始化扩展
     CORS(app, origins=app.config['CORS_ORIGINS'])

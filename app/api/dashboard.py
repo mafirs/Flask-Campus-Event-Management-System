@@ -3,9 +3,13 @@ from flask_restful import Resource
 from flask_jwt_extended import jwt_required
 from app.utils.response import success_response, error_response
 from app.utils.auth import get_current_user_id, is_admin
-from app.services.mock_data import mock_data_service
 from datetime import datetime, timedelta
 from collections import defaultdict
+from app import db
+from app.models.venue import Venue
+from app.models.material import Material
+from app.models.application import Application
+
 
 class DashboardStatsResource(Resource):
     """首页统计数据资源"""
@@ -19,46 +23,53 @@ class DashboardStatsResource(Resource):
                 return error_response(401, "无效的用户信息")
 
             # 获取基础统计数据
-            venues = mock_data_service.get_all_venues()
-            materials = mock_data_service.get_all_materials()
-            applications = mock_data_service.get_all_applications()
+            total_venues = Venue.query.count()
+            total_materials = Material.query.count()
 
-            # 计算统计数据
-            total_venues = len(venues)
-            total_materials = len(materials)
-            pending_applications = len([app for app in applications if app.status == 'pending'])
+            # 计算待审批申请数（包含新的状态）
+            pending_applications = Application.query.filter(
+                Application.status.in_(['pending_reviewer', 'pending_admin'])
+            ).count()
 
             # 计算今日申请数
             today = datetime.utcnow().date()
-            today_applications = len([
-                app for app in applications
-                if app.created_at.date() == today
-            ])
+            today_applications = Application.query.filter(
+                db.func.date(Application.created_at) == today
+            ).count()
 
             # 计算场地使用率
-            approved_applications = [app for app in applications if app.status == 'approved']
-            total_capacity = sum(venue.capacity for venue in venues if venue.is_available())
-            used_capacity = sum(
-                venue.capacity for app in approved_applications
-                for venue in venues
-                if venue.id == app.venue_id and venue.is_available()
-            )
+            approved_applications = Application.query.filter_by(status='approved').all()
+            total_capacity = db.session.query(db.func.sum(Venue.capacity)).filter(
+                Venue.status == 'available'
+            ).scalar() or 0
+
+            used_capacity = 0
+            if approved_applications:
+                for app in approved_applications:
+                    venue = db.session.get(Venue, app.venue_id)
+                    if venue and venue.is_available():
+                        used_capacity += venue.capacity
+
             venue_utilization = used_capacity / total_capacity if total_capacity > 0 else 0
 
             # 计算物资使用率
-            total_material_qty = sum(material.total_quantity for material in materials if material.is_available())
-            used_material_qty = sum(
-                material.total_quantity - material.available_quantity
-                for material in materials
-                if material.is_available()
-            )
+            total_material_qty = db.session.query(db.func.sum(Material.total_quantity)).filter(
+                Material.status == 'available'
+            ).scalar() or 0
+
+            used_material_qty = db.session.query(
+                db.func.sum(Material.total_quantity - Material.available_quantity)
+            ).filter(Material.status == 'available').scalar() or 0
+
             material_utilization = used_material_qty / total_material_qty if total_material_qty > 0 else 0
 
             # 获取用户个人申请统计
-            user_applications = mock_data_service.get_applications_by_user(current_user_id)
+            user_applications = Application.query.filter_by(user_id=current_user_id).all()
+
             my_applications_stats = {
                 'total': len(user_applications),
-                'pending': len([app for app in user_applications if app.status == 'pending']),
+                'pending_reviewer': len([app for app in user_applications if app.status == 'pending_reviewer']),
+                'pending_admin': len([app for app in user_applications if app.status == 'pending_admin']),
                 'approved': len([app for app in user_applications if app.status == 'approved']),
                 'rejected': len([app for app in user_applications if app.status == 'rejected']),
                 'cancelled': len([app for app in user_applications if app.status == 'cancelled'])
@@ -77,6 +88,7 @@ class DashboardStatsResource(Resource):
         except Exception as e:
             current_app.logger.error(f"获取统计数据错误: {str(e)}")
             return error_response(500, "服务器内部错误")
+
 
 class DashboardTrendsResource(Resource):
     """使用趋势数据资源"""
@@ -122,7 +134,10 @@ class DashboardTrendsResource(Resource):
                 return error_response(400, "开始时间必须早于结束时间")
 
             # 获取申请数据
-            applications = mock_data_service.get_all_applications()
+            applications = Application.query.filter(
+                Application.created_at >= start_date,
+                Application.created_at <= end_date
+            ).all()
 
             # 根据类型分组数据
             if trend_type == 'monthly':
@@ -141,7 +156,7 @@ class DashboardTrendsResource(Resource):
         # 按周分组统计
         venue_usage = defaultdict(int)
         material_usage = defaultdict(int)
-        application_trends = defaultdict(lambda: {'pending': 0, 'approved': 0, 'rejected': 0})
+        application_trends = defaultdict(lambda: {'pending_reviewer': 0, 'pending_admin': 0, 'approved': 0, 'rejected': 0})
 
         for app in applications:
             if start_date <= app.created_at <= end_date:
@@ -159,7 +174,8 @@ class DashboardTrendsResource(Resource):
                         material_usage[date_str] += material.quantity
 
                 # 申请状态统计
-                application_trends[date_str][app.status] += 1
+                if app.status in application_trends[date_str]:
+                    application_trends[date_str][app.status] += 1
 
         # 生成连续的日期序列
         trends = []
@@ -172,7 +188,7 @@ class DashboardTrendsResource(Resource):
                 'date': date_str,
                 'venueUsage': venue_usage.get(date_str, 0),
                 'materialUsage': material_usage.get(date_str, 0),
-                'applicationTrends': application_trends.get(date_str, {'pending': 0, 'approved': 0, 'rejected': 0})
+                'applicationTrends': application_trends.get(date_str, {'pending_reviewer': 0, 'pending_admin': 0, 'approved': 0, 'rejected': 0})
             })
 
             current_date += timedelta(days=7)
@@ -197,7 +213,7 @@ class DashboardTrendsResource(Resource):
         # 按月分组统计
         venue_usage = defaultdict(int)
         material_usage = defaultdict(int)
-        application_trends = defaultdict(lambda: {'pending': 0, 'approved': 0, 'rejected': 0})
+        application_trends = defaultdict(lambda: {'pending_reviewer': 0, 'pending_admin': 0, 'approved': 0, 'rejected': 0})
 
         for app in applications:
             if start_date <= app.created_at <= end_date:
@@ -215,7 +231,8 @@ class DashboardTrendsResource(Resource):
                         material_usage[date_str] += material.quantity
 
                 # 申请状态统计
-                application_trends[date_str][app.status] += 1
+                if app.status in application_trends[date_str]:
+                    application_trends[date_str][app.status] += 1
 
         # 生成连续的月份序列
         trends = []
@@ -227,7 +244,7 @@ class DashboardTrendsResource(Resource):
                 'date': date_str,
                 'venueUsage': venue_usage.get(date_str, 0),
                 'materialUsage': material_usage.get(date_str, 0),
-                'applicationTrends': application_trends.get(date_str, {'pending': 0, 'approved': 0, 'rejected': 0})
+                'applicationTrends': application_trends.get(date_str, {'pending_reviewer': 0, 'pending_admin': 0, 'approved': 0, 'rejected': 0})
             })
 
             # 移动到下个月

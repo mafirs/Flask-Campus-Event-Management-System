@@ -12,8 +12,8 @@ class Config:
     # CORS配置
     CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'http://localhost:5173,http://127.0.0.1:5173').split(',')
 
-    # 数据库配置 (开发环境使用SQLite)
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or 'sqlite:///school_management.db'
+    # 数据库配置 (开发环境使用MySQL)
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or 'mysql+pymysql://root:whs8fnh7@guestbook-mysql.ns-mh69tey1.svc:3306/campus_event_system'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # AI功能配置

@@ -1,8 +1,23 @@
 from datetime import datetime
 from typing import Optional, Dict, Any
+from app import db
 
-class Material:
+class Material(db.Model):
     """物资模型"""
+    __tablename__ = 'materials'
+
+    # SQLAlchemy 字段定义
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(64), unique=True, nullable=False)
+    category = db.Column(db.String(64), nullable=False)  # KEPT from original
+    total_quantity = db.Column(db.Integer, nullable=False)
+    available_quantity = db.Column(db.Integer, nullable=False)
+    unit = db.Column(db.String(10), nullable=False)
+    description = db.Column(db.Text, nullable=False)
+    image_url = db.Column(db.String(256))  # NEW - nullable
+    status = db.Column(db.String(20), default='available')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def __init__(self, id: int, name: str, category: str, total_quantity: int,
                  unit: str, description: str, available_quantity: Optional[int] = None,

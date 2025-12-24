@@ -1,12 +1,21 @@
 from datetime import datetime
 from typing import Optional, Dict, Any, List
+from app import db
 
-class ApplicationMaterial:
+class ApplicationMaterial(db.Model):
     """申请物资关联模型"""
+    __tablename__ = 'application_materials'
 
-    def __init__(self, material_id: int, quantity: int):
+    # SQLAlchemy 字段定义
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    application_id = db.Column(db.Integer, db.ForeignKey('applications.id'), nullable=False)
+    material_id = db.Column(db.Integer, db.ForeignKey('materials.id'), nullable=False)
+    quantity = db.Column(db.Integer, nullable=False)
+
+    def __init__(self, material_id: int, quantity: int, application_id: Optional[int] = None):
         self.material_id = material_id
         self.quantity = quantity
+        self.application_id = application_id
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式"""
@@ -23,8 +32,28 @@ class ApplicationMaterial:
             quantity=data['quantity']
         )
 
-class Application:
+
+class Application(db.Model):
     """申请模型"""
+    __tablename__ = 'applications'
+
+    # SQLAlchemy 字段定义
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    venue_id = db.Column(db.Integer, db.ForeignKey('venues.id'), nullable=False)
+    activity_name = db.Column(db.String(128), nullable=False)
+    activity_description = db.Column(db.Text, nullable=False)
+    start_time = db.Column(db.String(32), nullable=False)  # ISO format string
+    end_time = db.Column(db.String(32), nullable=False)
+    status = db.Column(db.String(20), default='pending')
+    rejection_reason = db.Column(db.String(256))
+    reviewer_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    reviewed_at = db.Column(db.DateTime, nullable=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationship to ApplicationMaterial
+    materials = db.relationship('ApplicationMaterial', backref='application', lazy=True)
 
     def __init__(self, id: int, user_id: int, activity_name: str,
                  activity_description: str, venue_id: int,

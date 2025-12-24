@@ -1,9 +1,21 @@
 from datetime import datetime
 from typing import Optional, Dict, Any
 from werkzeug.security import generate_password_hash, check_password_hash
+from app import db
 
-class User:
-    """用户模型 (使用内存存储，后续可迁移到数据库)"""
+class User(db.Model):
+    """用户模型"""
+    __tablename__ = 'users'
+
+    # SQLAlchemy 字段定义
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(64), unique=True, index=True, nullable=False)
+    password_hash = db.Column(db.String(128), nullable=False)
+    real_name = db.Column(db.String(64), nullable=False)
+    role = db.Column(db.String(20), nullable=False)  # admin, reviewer, user
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    status = db.Column(db.String(20), default='active')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def __init__(self, id: int, username: str, password: str, real_name: str,
                  role: str, email: str, status: str = 'active'):
