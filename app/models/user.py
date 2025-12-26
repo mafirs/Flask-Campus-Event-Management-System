@@ -10,7 +10,7 @@ class User(db.Model):
     # SQLAlchemy 字段定义
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(64), unique=True, index=True, nullable=False)
-    password_hash = db.Column(db.String(128), nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
     real_name = db.Column(db.String(64), nullable=False)
     role = db.Column(db.String(20), nullable=False)  # admin, reviewer, user
     email = db.Column(db.String(120), unique=True, nullable=False)

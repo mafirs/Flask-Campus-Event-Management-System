@@ -19,10 +19,11 @@ class Material(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    def __init__(self, id: int, name: str, category: str, total_quantity: int,
+    def __init__(self, name: str, category: str, total_quantity: int,
                  unit: str, description: str, available_quantity: Optional[int] = None,
-                 status: str = 'available'):
-        self.id = id
+                 status: str = 'available', id: int = None):
+        if id is not None:
+            self.id = id
         self.name = name
         self.category = category
         self.total_quantity = total_quantity

@@ -18,9 +18,10 @@ class Venue(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    def __init__(self, id: int, name: str, location: str, capacity: int,
-                 description: str, equipment: List[str], status: str = 'available'):
-        self.id = id
+    def __init__(self, name: str, location: str, capacity: int,
+                 description: str, equipment: List[str] = None, status: str = 'available', id: int = None):
+        if id is not None:
+            self.id = id
         self.name = name
         self.location = location
         self.capacity = capacity
