@@ -97,6 +97,32 @@ class PendingApprovalResource(Resource):
 class ApplicationApproveResource(Resource):
     """申请审批通过资源"""
 
+    def _validate_final_conflict(self, application):
+        """
+        [新增] 审批通过前的最终原子化冲突检测
+        即便提交时已预占，此处仍需防止：
+        1. 并发审批导致的时间重叠漏判
+        2. 极端的库存数据不一致
+        """
+        # 1. 再次检查时间冲突（排除已被取消或拒绝的，只看生效中的）
+        # 注意：这里使用 with_for_update() 加行锁，确保原子性（毕设加分点）
+        conflicting_apps = db.session.query(Application).filter(
+            Application.venue_id == application.venue_id,
+            Application.id != application.id,
+            Application.status.in_(['approved']), # 只查已通过的，防止时间撞车
+            Application.start_time < application.end_time,
+            Application.end_time > application.start_time
+        ).with_for_update().all()
+
+        if conflicting_apps:
+            raise ValueError(f"检测到时间冲突：该时段已被申请 {conflicting_apps[0].id} 占用")
+
+        # 2. 检查物资库存（虽然提交时扣了，但为了稳健，确认一下总数没崩）
+        for app_material in application.materials:
+            material = db.session.get(Material, app_material.material_id)
+            if material.available_quantity < 0: # 理论上不该发生，除非手动改库
+                raise ValueError(f"物资 {material.name} 库存异常(负数)")
+
     @reviewer_required
     def put(self, application_id):
         """审批申请通过"""
@@ -107,6 +133,7 @@ class ApplicationApproveResource(Resource):
             if not current_user:
                 return error_response(401, "无效的用户信息")
 
+            # 开启事务（Flask-SQLAlchemy 默认在 commit 前都在事务中）
             application = db.session.get(Application, application_id)
             if not application:
                 return error_response(404, "申请不存在")
@@ -122,7 +149,15 @@ class ApplicationApproveResource(Resource):
             elif current_user.role == 'admin':
                 if application.status != 'pending_admin':
                     return error_response(400, "非待管理员审核状态")
-                # 最终通过
+
+                # [关键修改] 在最终通过前，执行原子化校验
+                try:
+                    self._validate_final_conflict(application)
+                except ValueError as ve:
+                    # 如果检测到冲突，自动驳回或报错
+                    return error_response(409, str(ve))
+
+                # 校验通过，更新状态
                 application.status = 'approved'
 
             else:

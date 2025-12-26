@@ -21,6 +21,7 @@ class MaterialListResource(Resource):
             category = request.args.get('category')
             status = request.args.get('status')
             search = request.args.get('search', '').strip()
+            low_stock = request.args.get('low_stock')
 
             # 构建查询
             query = Material.query
@@ -40,6 +41,9 @@ class MaterialListResource(Resource):
                         Material.category.ilike(search_pattern)
                     )
                 )
+
+            if low_stock and low_stock.lower() == 'true':
+                query = query.filter(Material.available_quantity < 10)
 
             # 分页
             pagination = query.order_by(Material.created_at.desc()).paginate(

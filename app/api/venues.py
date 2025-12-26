@@ -229,3 +229,49 @@ class VenueAvailableResource(Resource):
         except Exception as e:
             current_app.logger.error(f"查询可用场地错误: {str(e)}")
             return error_response(500, "服务器内部错误")
+
+
+class VenueBookingsResource(Resource):
+    """场地预订时间轴资源"""
+
+    @jwt_required()
+    def get(self, venue_id):
+        """获取场地预订时间轴"""
+        try:
+            from app.models.user import User
+            from datetime import timedelta
+
+            # 获取查询参数
+            days = int(request.args.get('days', 7))
+
+            # 计算时间范围
+            now = datetime.utcnow()
+            end_date = now + timedelta(days=days)
+
+            # 查询已通过的申请
+            applications = db.session.query(Application).filter(
+                Application.venue_id == venue_id,
+                Application.status == 'approved',
+                Application.start_time < end_date,
+                Application.end_time > now
+            ).order_by(Application.start_time).all()
+
+            # 构建返回数据
+            bookings_data = []
+            for app in applications:
+                user = db.session.get(User, app.user_id)
+                bookings_data.append({
+                    'id': app.id,
+                    'activityName': app.activity_name,
+                    'startTime': app.start_time.isoformat(),
+                    'endTime': app.end_time.isoformat(),
+                    'applicantName': user.real_name if user else ''
+                })
+
+            return success_response(bookings_data)
+
+        except ValueError as e:
+            return error_response(400, "参数格式错误")
+        except Exception as e:
+            current_app.logger.error(f"获取场地预订时间轴错误: {str(e)}")
+            return error_response(500, "服务器内部错误")

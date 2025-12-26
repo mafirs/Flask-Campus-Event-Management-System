@@ -42,7 +42,7 @@ def create_app(config_name='default'):
 
     # 注册API资源到对应的蓝图
     from app.api.auth import LoginResource, LogoutResource, ProfileResource
-    from app.api.venues import VenueListResource, VenueResource, VenueAvailableResource
+    from app.api.venues import VenueListResource, VenueResource, VenueAvailableResource, VenueBookingsResource
     from app.api.materials import MaterialListResource, MaterialResource
     from app.api.applications import ApplicationListResource, ApplicationResource, MyApplicationResource, ApplicationCancelResource
     from app.api.approvals import PendingApprovalResource, ApplicationApproveResource, ApplicationRejectResource
@@ -57,6 +57,7 @@ def create_app(config_name='default'):
     api.add_resource(VenueListResource, '/api/venues')
     api.add_resource(VenueResource, '/api/venues/<int:venue_id>')
     api.add_resource(VenueAvailableResource, '/api/venues/available')
+    api.add_resource(VenueBookingsResource, '/api/venues/<int:venue_id>/bookings')
 
     # 物资管理API
     api.add_resource(MaterialListResource, '/api/materials')
